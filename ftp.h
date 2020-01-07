@@ -5,7 +5,6 @@
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
-#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,63 +14,45 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#define FTP_PRINTF printf
-
-#define MAXBUF (1024)
-
-#define CODE_FTP_SERVICE_OK 220
-#define CODE_FTP_PASSWORD_REQUIRED 331
-#define CODE_FTP_LOGGED_IN 230
-#define CODE_FTP_QUIT 221
-#define CODE_FTP_OK 257
-#define CODE_FTP_PASV_MODE 227
-#define CODE_FTP_DATA_CON_OPENED 125
+#include <string>
 
 class CommFtp {
 public:
     CommFtp();
     ~CommFtp();
     // 连接
-    int Connect(const char* host, int port);
+    int fConnect(const char* host, int port);
     // ftp://username:password@192.168.3.6:21
-    int Connect(const char* ftpUrl);
+    int fConnect(const char* ftpUrl);
     // Login
-    int Login(int servfd, const char* username, const char* password);
-    // // RecvTcp 开始处理数据
-    // void StartRecvTcp();
-    // // 停止
-    // void StopRecvTcp();
-    // // h后台线程
-    // void ThisProcesss();
+    int fLogin(int servfd, const char* username, const char* password);
     // PASV
-    int Pasv();
+    int fPasv();
     // PWD
-    int Pwd();
+    int fPwd();
     // Ls
-    int Ls();
+    int fLs();
     // GET
-    int Get(const char* srcfpName, const char* dstfpName);
+    int fGet(const char* srcfpName, const char* dstfpName);
     // PUT
-    int Put(const char* fpName);
+    int fPut(const char* fpName);
+    // CD
+    int fCd(const char* dir);
     // QUIT
-    int Quit();
+    int fQuit();
 
 private:
     // exec
-    int command(const char* code, const char* arg = NULL);
-    // reply code
-    int replayCode(const char* src = NULL);
+    std::string command(const char* code, const char* arg = NULL);
+    //
+    std::string recvByChar();
     //
     int replayLf();
-
 private:
     int         nServSocket_;
     const char* pStrLF_;
-    int         nErrorCode_;
-    bool        bStart_;
     const char* pUsername_;
     const char* pPassword_;
-    pthread_t   pThisThread_;
 };
 
 #endif

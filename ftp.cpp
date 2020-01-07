@@ -1,37 +1,40 @@
 #include "ftp.h"
 #include <arpa/inet.h>
+#include <string.h>
 
-// void *CommFtpThreadProcess(void *args)
-// {
-//     CommFtp *ftp = (CommFtp *)args;
-//     ftp->ThisProcesss();
-// }
+#define FTP_PRINTF printf
 
-int strtosrv(char* str, char* host)
+const int CODE_FTP_SERVICE_OK        = 220;
+const int CODE_FTP_PASSWORD_REQUIRED = 331;
+const int CODE_FTP_LOGGED_IN         = 230;
+const int CODE_FTP_QUIT              = 221;
+const int CODE_FTP_OK                = 257;
+const int CODE_FTP_PASV_MODE         = 227;
+const int CODE_FTP_DATA_CON_OPENED   = 125;
+
+int prase_code(const char* src)
 {
-    int addr[6];
-    sscanf(str, "%*[^(](%d,%d,%d,%d,%d,%d)", &addr[0], &addr[1], &addr[2], &addr[3], &addr[4], &addr[5]);
-    bzero(host, strlen(host));
-    sprintf(host, "%d.%d.%d.%d", addr[0], addr[1], addr[2], addr[3]);
-    int port = addr[4] * 256 + addr[5];
-    return port;
+    if (src) {
+        FTP_PRINTF("%s\n", src);
+        char strCode[4] = { 0 };
+        strncpy(strCode, src, 3);
+        return atoi(strCode);
+    }
+    return -1;
 }
 
 CommFtp::CommFtp()
 {
     nServSocket_ = -1;
     pStrLF_      = "\n";
-    bStart_      = false;
 }
-
 CommFtp::~CommFtp()
 {
     close(nServSocket_);
     nServSocket_ = -1;
-    bStart_      = false;
 }
-
-int CommFtp::Connect(const char* host, int port)
+// 连接
+int CommFtp::fConnect(const char* host, int port)
 {
     int             sock = -1;
     struct hostent* ht   = NULL;
@@ -53,116 +56,215 @@ int CommFtp::Connect(const char* host, int port)
     }
     return sock;
 }
-
 // ftp://username:password@192.168.3.6:21
-int CommFtp::Connect(const char* ftpUrl)
+int CommFtp::fConnect(const char* ftpUrl)
 {
-    if (NULL == strstr(ftpUrl, "ftp://")) {
-        return -1;
-    }
-    char        username[64] = { 0 };
-    char        password[64] = { 0 };
-    char        ipAddr[64]   = { 0 };
-    int         servSock = -1, port = 0;
-    const char* p1 = ftpUrl + 6;
-    const char* p2 = strchr(p1, ':');
-    strncpy(username, p1, p2 - p1);
 
-    p1 = p2;
-    p2 = strchr(p1, '@');
-    strncpy(password, p1 + 1, p2 - p1 - 1);
+    struct host_info {
+        char* host;
+        int   port;
+        char* path;
+        char* user;
+        char* pass;
+    };
+    do {
+        char uri[1024] = { 0 };
+        strcpy(uri, ftpUrl);
+        char *    up = NULL, *sp = NULL;
+        host_info h;
+        // 解析协议
+        if (strncmp(ftpUrl, "ftp://", 6)) {
+            break;
+        }
+        char* url = &uri[6];
+        // 解析是否携带内容
+        sp = strtok_r(url, ":", &up);
+        if (!sp) {
+            break;
+        }
+        h.user = sp;
 
-    p1 = p2;
-    p2 = strchr(p1, ':');
-    strncpy(ipAddr, p1 + 1, p2 - p1 - 1);
+        sp = strtok_r(NULL, "@", &up);
+        if (!sp) {
+            break;
+        }
+        h.pass = sp;
 
-    p1 = p2;
-    p2 = strchr(p1, '/');
-    if (p2) {
-        port = atoi(p1 + 1);
-    } else {
-        port = atoi(p1 + 1);
-    }
-    if ((servSock = this->Connect(ipAddr, port)) < 0) {
-        return -1;
-    }
-    if (this->Login(servSock, username, password) < 0) {
-        return -1;
-    }
-    return servSock;
+        sp = strtok_r(NULL, ":", &up);
+        if (!sp) {
+            break;
+        }
+        h.host = sp;
+
+        sp = strtok_r(NULL, "/", &up);
+        if (!sp) {
+            h.port = atoi(up);
+        } else {
+            h.port = atoi(sp);
+        }
+
+        int s = fConnect(h.host, h.port);
+        if (s < 0) {
+            break;
+        }
+        if (fLogin(s, h.user, h.pass) < 0) {
+            break;
+        }
+        return s;
+    } while (0);
+    return -1;
 }
-
 // Login
-int CommFtp::Login(int servfd, const char* username, const char* password)
+int CommFtp::fLogin(int servfd, const char* username, const char* password)
 {
     nServSocket_ = servfd;
     if (this->replayLf() != CODE_FTP_SERVICE_OK) {
         return -1;
     }
-    this->command("USER", username);
-    if (replayCode() != CODE_FTP_PASSWORD_REQUIRED) {
+    if (prase_code(command("USER", username).c_str()) != CODE_FTP_PASSWORD_REQUIRED) {
         return -1;
     }
     pUsername_ = username;
-    this->command("PASS", password);
-    if (replayCode() != CODE_FTP_LOGGED_IN) {
+    if (prase_code(command("PASS", password).c_str()) != CODE_FTP_LOGGED_IN) {
         return -1;
     }
     pPassword_ = password;
+    return 0;
+}
+// PASV
+int CommFtp::fPasv()
+{
+    std::string recvline = this->command("PASV");
+    if (prase_code(recvline.c_str()) < 0) {
+        return -1;
+    }
+    int addr[6];
+    sscanf(recvline.c_str(), "%*[^(](%d,%d,%d,%d,%d,%d)", &addr[0], &addr[1], &addr[2], &addr[3], &addr[4], &addr[5]);
+    struct sockaddr_in dataAddr = { 0 };
+    dataAddr.sin_family         = AF_INET;
+    dataAddr.sin_addr.s_addr    = htonl((addr[0] << 24) | (addr[1] << 16) | (addr[2] << 8) | addr[3]);
+    dataAddr.sin_port           = htons((addr[4] << 8) | addr[5]);
+
+    int s = socket(AF_INET, SOCK_STREAM, 0);
+    if (connect(s, ( struct sockaddr* )&dataAddr, sizeof(dataAddr)) < 0) {
+        perror("ftp: connect");
+        return -1;
+    }
+    return s;
+}
+// PWD
+int CommFtp::fPwd()
+{
+    std::string recvline = this->command("PWD");
+    if (prase_code(recvline.c_str()) != CODE_FTP_OK) {
+        return -1;
+    }
+    int         i               = 0;
+    char        currendir[1024] = { 0 };
+    const char* ptr             = recvline.c_str() + 5;
+    while (*(ptr) != '"') {
+        currendir[i++] = *(ptr);
+        ptr++;
+    }
+    printf("Dir is:%s\n", currendir);
+    return 0;
+}
+// Ls
+int CommFtp::fLs()
+{
+    int ds = this->fPasv();
+    if (ds <= 0) {
+        return -1;
+    }
+    if (prase_code(command("LIST").c_str()) < 0) {
+        return -1;
+    }
+    for (;;) {
+        char buffer[BUFSIZ] = { 0 };
+
+        int nread = recv(ds, buffer, BUFSIZ, 0);
+        if (nread <= 0) {
+            break;
+        }
+        FTP_PRINTF("%s", buffer);
+    }
+    close(ds);
+    FTP_PRINTF("%s\n", recvByChar().c_str());
+}
+// GET
+int CommFtp::fGet(const char* srcfpName, const char* dstfpName)
+{
+    int ds = this->fPasv();
+    if (ds <= 0) {
+        return -1;
+    }
+    if (prase_code(command("RETR", srcfpName).c_str()) < 0) {
+        return -1;
+    }
+    int fpHandle = open(dstfpName, O_WRONLY | O_CREAT | O_TRUNC, S_IREAD | S_IWRITE);
+    for (;;) {
+        char buffer[BUFSIZ] = { 0 };
+
+        int nread = recv(ds, buffer, BUFSIZ, 0);
+        if (nread <= 0) {
+            break;
+        }
+        FTP_PRINTF("recv len: %d\n", nread);
+        if (write(fpHandle, buffer, nread) != nread) {
+            FTP_PRINTF("receive error from server!");
+        }
+    }
+    close(fpHandle);
+    close(ds);
+    FTP_PRINTF("%s\n", recvByChar().c_str());
+    return 0;
+}
+// PUT
+int CommFtp::fPut(const char* fpName)
+{
+    int ds = this->fPasv();
+    if (ds <= 0) {
+        return -1;
+    }
+    if (prase_code(command("STOR", fpName).c_str()) < 0) {
+        return -1;
+    }
+    int fpHandle = open(fpName, O_RDWR);
+    for (;;) {
+        char buffer[BUFSIZ] = { 0 };
+
+        int nread = read(fpHandle, buffer, BUFSIZ);
+        if (nread <= 0) {
+            break;
+        }
+        if (write(ds, buffer, nread) != nread) {
+            FTP_PRINTF("receive error from server!");
+        }
+    }
+    close(fpHandle);
+    close(ds);
+    FTP_PRINTF("%s\n", recvByChar().c_str());
+    return 0;
 }
 
-// Process
-// void CommFtp::ThisProcesss()
-// {
-//     fd_set rset;
-//     FD_ZERO(&rset);
-//     int maxfd = nServSocket_ + 1;
-//     while (bStart_)
-//     {
-//         FD_SET(nServSocket_, &rset);
-//         if (select(maxfd, &rset, NULL, NULL, NULL) < 0)
-//         {
-//             continue;
-//         }
+// CD
+int CommFtp::fCd(const char* dir)
+{
+    std::string recvline = this->command("CWD", dir);
+    if (prase_code(recvline.c_str()) != CODE_FTP_OK) {
+        return -1;
+    }
+    return 0;
+}
 
-//         if (FD_ISSET(nServSocket_, &rset))
-//         {
-//             switch (replayCode())
-//             {
-//             case CODE_FTP_SERVICE_OK:
-//                 this->command("USER", pUsername_);
-//                 break;
-//             case CODE_FTP_PASSWORD_REQUIRED: // quit
-//                 this->command("PASS", pPassword_);
-//                 break;
-//             case 502:
-//                 FTP_PRINTF("502 Invalid command\n");
-//                 break;
-//             case CODE_FTP_QUIT: // quit
-//                 bStart_ = false;
-//                 break;
-//             default:
-//                 break;
-//             }
-//         }
-//     }
-//     bStart_ = false;
-// }
+// QUIT
+int CommFtp::fQuit()
+{
+    this->command("QUIT");
+}
 
-// // 开始
-// void CommFtp::StartRecvTcp()
-// {
-//     bStart_ = true;
-//     pthread_create(&pThisThread_, NULL, CommFtpThreadProcess, this);
-// }
-// // 停止
-// void CommFtp::StopRecvTcp()
-// {
-//     bStart_ = false;
-//     pthread_cancel(pThisThread_);
-// }
-
-int CommFtp::command(const char* code, const char* arg)
+// exec
+std::string CommFtp::command(const char* code, const char* arg)
 {
     char buffer[1024] = { 0 };
     if (arg) {
@@ -170,30 +272,27 @@ int CommFtp::command(const char* code, const char* arg)
     } else {
         sprintf(buffer, "%s%s", code, pStrLF_);
     }
-    FTP_PRINTF("> %s\n", buffer);
+    // FTP_PRINTF("> %s\n", buffer);
     if (send(nServSocket_, buffer, ( int )strlen(buffer), 0) < 0) {
         FTP_PRINTF("tcp send msg: %s error\n", buffer);
-        return -1;
+        return "";
     }
-    return 0;
+    return recvByChar();
 }
-
-int CommFtp::replayCode(const char* src)
+//
+std::string CommFtp::recvByChar()
 {
-    char recvline[1024] = { 0 };
-    if (!src) {
-        if (recv(nServSocket_, recvline, sizeof(recvline), 0) < 0) {
-            return -1;
-        }
-    } else {
-        strcpy(recvline, src);
+    char           replyString[BUFSIZ] = { 0 };
+    register int   c;
+    register char* cp   = replyString;
+    static FILE*   fpIn = fdopen(nServSocket_, "r");
+    while ((c = getc(fpIn)) != '\n') {
+        if (cp < &replyString[sizeof(replyString) - 1])
+            *cp++ = c;
     }
-    printf("%s\n", recvline);
-    char strCode[4] = { 0 };
-    strncpy(strCode, recvline, 3);
-    return atoi(strCode);
+    return replyString;
 }
-
+//
 int CommFtp::replayLf()
 {
     char recvline[1024] = { 0 };
@@ -207,136 +306,4 @@ int CommFtp::replayLf()
     char code[4] = { 0 };
     strncpy(code, recvline, 3);
     return atoi(code);
-}
-
-// pasv 返回新连接的socket
-int CommFtp::Pasv()
-{
-    this->command("PASV");
-    char recvline[1024] = { 0 };
-    char sockHost[32]   = { 0 };
-    if (recv(nServSocket_, recvline, sizeof(recvline), 0) < 0) {
-        return -1;
-    }
-    FTP_PRINTF("%s\n", recvline);
-    int sockPort = strtosrv(recvline, sockHost);
-    return this->Connect(sockHost, sockPort);
-}
-
-// PWD
-int CommFtp::Pwd()
-{
-    this->command("PWD");
-    char recvline[1024] = { 0 };
-    if (recv(nServSocket_, recvline, sizeof(recvline), 0) < 0) {
-        return -1;
-    }
-    if (replayCode(recvline) != CODE_FTP_OK) {
-        return -1;
-    }
-    int   i               = 0;
-    char  currendir[1024] = { 0 };
-    char* ptr             = recvline + 5;
-    while (*(ptr) != '"') {
-        currendir[i++] = *(ptr);
-        ptr++;
-    }
-    printf("Dir is:%s\n", currendir);
-    return 0;
-}
-
-// Ls
-int CommFtp::Ls()
-{
-    int sockfd = this->Pasv();
-    if (sockfd < 0) {
-        return -1;
-    }
-    if (this->command("LS") < 0) {
-        return -1;
-    }
-    int nread;
-    for (;;) {
-        char buffer[MAXBUF] = { 0 };
-        if ((nread == recv(sockfd, buffer, MAXBUF, 0)) < 0) {
-            FTP_PRINTF("recv error\n");
-        } else if (nread == 0) {
-            FTP_PRINTF("over\n");
-            break;
-        }
-        printf("%s", buffer);
-    }
-}
-
-// get
-int CommFtp::Get(const char* srcfpName, const char* dstfpName)
-{
-    int sockfd = this->Pasv();
-    if (sockfd < 0) {
-        return -1;
-    }
-    if (this->command("RETR", srcfpName) < 0) {
-        return -1;
-    }
-    int handle = open(dstfpName, O_WRONLY | O_CREAT | O_TRUNC, S_IREAD | S_IWRITE);
-    for (;;) {
-        int  nread;
-        char buffer[MAXBUF] = { 0 };
-        if ((nread = recv(sockfd, buffer, MAXBUF, 0)) < 0) {
-            FTP_PRINTF("reveive error\n");
-        } else if (nread == 0) {
-            FTP_PRINTF("over\n");
-            break;
-        }
-        FTP_PRINTF("recv len: %d\n", nread);
-        if (write(handle, buffer, nread) != nread) {
-            FTP_PRINTF("receive error from server!");
-        }
-    }
-    if (close(sockfd) < 0) {
-        FTP_PRINTF("close sockfd error\n");
-    }
-    if (close(handle) < 0) {
-        FTP_PRINTF("close fp error\n");
-    }
-    return 0;
-}
-
-// Put
-int CommFtp::Put(const char* fpName)
-{
-    int sockfd = this->Pasv();
-    if (sockfd < 0) {
-        return -1;
-    }
-    if (this->command("STOR", fpName) < 0) {
-        return -1;
-    }
-    int handle = open(fpName, O_RDWR);
-    for (;;) {
-        int  nread;
-        char buffer[MAXBUF] = { 0 };
-        if ((nread = read(handle, buffer, MAXBUF)) < 0) {
-            FTP_PRINTF("reveive error\n");
-        } else if (nread == 0) {
-            FTP_PRINTF("over\n");
-            break;
-        }
-        if (write(sockfd, buffer, nread) != nread) {
-            FTP_PRINTF("receive error from server!");
-        }
-    }
-    if (close(sockfd) < 0) {
-        FTP_PRINTF("close sockfd error\n");
-    }
-    if (close(handle) < 0) {
-        FTP_PRINTF("close fp error\n");
-    }
-    return 0;
-}
-
-// QUIT
-int CommFtp::Quit()
-{
-    this->command("QUIT");
 }

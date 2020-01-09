@@ -98,11 +98,10 @@ int CommFtp::fConnect(const char* ftpUrl)
 
         sp = strtok_r(NULL, "/", &up);
         if (!sp) {
-            h.port = atoi(up);
-        } else {
-            h.port = atoi(sp);
-        }
-
+            break;
+        } 
+        h.port = atoi(sp);
+        
         int s = fConnect(h.host, h.port);
         if (s < 0) {
             break;
@@ -176,7 +175,7 @@ int CommFtp::fLs()
     if (ds <= 0) {
         return -1;
     }
-    if (prase_code(command("LIST").c_str()) < 0) {
+    if (prase_code(command("LIST").c_str()) != CODE_FTP_DATA_CON_OPENED) {
         return -1;
     }
     for (;;) {
@@ -198,7 +197,7 @@ int CommFtp::fGet(const char* srcfpName, const char* dstfpName)
     if (ds <= 0) {
         return -1;
     }
-    if (prase_code(command("RETR", srcfpName).c_str()) < 0) {
+    if (prase_code(command("RETR", srcfpName).c_str()) != CODE_FTP_DATA_CON_OPENED) {
         return -1;
     }
     int fpHandle = open(dstfpName, O_WRONLY | O_CREAT | O_TRUNC, S_IREAD | S_IWRITE);
@@ -226,7 +225,7 @@ int CommFtp::fPut(const char* fpName)
     if (ds <= 0) {
         return -1;
     }
-    if (prase_code(command("STOR", fpName).c_str()) < 0) {
+    if (prase_code(command("STOR", fpName).c_str()) != CODE_FTP_DATA_CON_OPENED) {
         return -1;
     }
     int fpHandle = open(fpName, O_RDWR);
